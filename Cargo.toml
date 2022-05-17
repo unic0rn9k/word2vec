@@ -1,0 +1,11 @@
+[package]
+name = "word2vec"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+blas-src = "0.8.0"
+exotic = { path = "../exotic2/exotic" }
+exotic_macro = { path = "../exotic2/exotic_macro" }
+indicatif = "0.16.2"
+rand_distr = "0.4.3"
