@@ -12,6 +12,7 @@
 //! - https://github.com/unic0rn9k/exotic
 
 #![feature(round_char_boundary)]
+
 use exotic::rand::Rng;
 use exotic::{
     anyhow::*,
@@ -20,28 +21,33 @@ use exotic::{
 };
 use exotic_macro::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use rand_distr::StandardNormal;
-use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
 extern crate blas_src;
 use slas_backend::Blas;
 
-const UNIQUE_WORDS: usize = 27958;
-const MAX_DISTANCE: usize = 5;
+use crate::dictionary::Dictionary;
+
+mod dictionary;
+
+//const UNIQUE_WORDS: usize = 27958;
+const DICTIONARY_SIZE: usize = 1000;
+const MAX_DISTANCE: usize = 4;
+const INPUT_FILE: &'static str = "shake.txt";
+const PROGRESSBAR_UPDATE_RATE: usize = 100;
+const EMBEDDED_SIZE: usize = 120;
 
 model! {(
-derive: [],
-name: "NeuralNet",
-layers: [
-    ("DenseHeapLayer::<f32, Blas, UNIQUE_WORDS, 100>", "DenseHeapLayer::random(0.01)"),
-    ("Relu::<f32, 100>", "default()"),
-    ("DenseHeapLayer::<f32, Blas, 100, UNIQUE_WORDS>", "DenseHeapLayer::random(0.01)"),
-    ("Softmax::<f32, UNIQUE_WORDS>", "default()")
-],
-float_type: "f32",
-input_len: 27958,
-output_len: 27958,
+    derive: [],
+    name: "NeuralNet",
+    layers: [
+        ("DenseHeapLayer::<f32, Blas, DICTIONARY_SIZE, EMBEDDED_SIZE>", "DenseHeapLayer::random(0.04)"),
+        ("DenseHeapLayer::<f32, Blas, EMBEDDED_SIZE, DICTIONARY_SIZE>", "DenseHeapLayer::random(0.04)"),
+        ("Softmax::<f32, DICTIONARY_SIZE>", "default()")
+    ],
+    float_type: "f32",
+    input_len: 1000,
+    output_len: 1000,
 )}
 
 fn wordify(str: &mut String) -> Result<()> {
@@ -70,24 +76,35 @@ fn ring_index(mut idx: isize, len: usize) -> usize {
     }
 }
 
+fn load_net(net: &mut NeuralNet) -> Result<()> {
+    let mut f = File::open("l0_parameters")?;
+    let mut buffer = vec![];
+    f.read_to_end(&mut buffer)?;
+    deserialize_dense_layer(&mut net.l0, &mut buffer.iter().copied());
+    f = File::open("l2_parameters")?;
+    f.read_to_end(&mut buffer)?;
+    deserialize_dense_layer(&mut net.l1, &mut buffer.iter().copied());
+    Ok(())
+}
+
 fn main() -> Result<()> {
     println!("Initializing stuff...");
     let mut rng = thread_rng();
 
     let mut net = NeuralNet::new();
+    println!("{:?}", load_net(&mut net));
     let mut buffer = unsafe { NeuralNet::uninit_cache() };
 
     let mut word_buffer = vec![];
-    let mut word_id = HashMap::new();
-    let mut id_word = vec![];
 
-    let reader = BufReader::new(File::open("shake.txt").unwrap());
+    let Dictionary { word_id, id_word } = Dictionary::open(INPUT_FILE);
+
+    let reader = BufReader::new(File::open(INPUT_FILE).unwrap());
 
     let spinner = ProgressBar::new(0);
     spinner.set_style(
-        ProgressStyle::default_bar().template("{prefix:.bold.dim} {spinner} {wide_msg}"),
+        ProgressStyle::default_bar().template(" {spinner} {prefix:.bold.dim}\t{wide_msg}"),
     );
-    spinner.set_prefix("Training");
 
     let mut word_count = 0;
     let mut epoch = 0;
@@ -104,8 +121,7 @@ fn main() -> Result<()> {
             spinner.inc(1);
 
             if !word_id.contains_key(&word) {
-                word_id.insert(word.clone(), word_id.len());
-                id_word.push(word.clone());
+                continue;
             }
 
             if word_buffer.len() < MAX_DISTANCE * 2 {
@@ -114,33 +130,36 @@ fn main() -> Result<()> {
             }
             word_buffer[ring_index(word_count as isize, MAX_DISTANCE * 2)] = word.clone();
 
-            let mut word_delta = 0;
-            while word_delta == 0 {
-                word_delta = (rng.sample::<f32, _>(StandardNormal) * MAX_DISTANCE as f32) as isize;
+            let mut word2 = String::new();
+            while !word_id.contains_key(&word2) {
+                let mut word_delta = 0;
+                while word_delta == 0 {
+                    word_delta = rng.gen_range(0..MAX_DISTANCE) as isize;
+                }
+
+                if rand::random() {
+                    word_delta *= -1;
+                }
+                word2 = word_buffer[ring_index(
+                    word_count as isize + word_delta - MAX_DISTANCE as isize,
+                    word_buffer.len(),
+                )]
+                .clone();
             }
 
-            if rand::random() {
-                word_delta *= -1;
-            }
-            let word2 = word_buffer
-                [ring_index(word_count as isize + word_delta, word_buffer.len())]
-            .clone();
-
-            let i: [f32; UNIQUE_WORDS] = onehot(word_id[&word]);
+            let i: [f32; DICTIONARY_SIZE] = onehot(
+                word_id[&word_buffer[ring_index(
+                    word_count as isize - MAX_DISTANCE as isize,
+                    word_buffer.len(),
+                )]],
+            );
 
             net.predict(i, &mut buffer)?;
 
-            let y: [f32; UNIQUE_WORDS] = if let Some(id) = word_id.get(&word2) {
-                onehot(*id)
-            } else {
-                let id = word_id.len();
-                word_id.insert(word2.clone(), id);
-                id_word.push(word2.clone());
-                onehot(id)
-            };
+            let y: [f32; DICTIONARY_SIZE] = onehot(word_id[&word2]);
 
-            let o = &buffer[buffer.len() - UNIQUE_WORDS..buffer.len()];
-            let dy = moo![|n| o[n] - y[n]; UNIQUE_WORDS];
+            let o = &buffer[buffer.len() - DICTIONARY_SIZE..buffer.len()];
+            let dy = moo![|n| o[n] - y[n]; DICTIONARY_SIZE];
 
             let cost = o
                 .iter()
@@ -156,22 +175,75 @@ fn main() -> Result<()> {
 
             cost_sum += cost;
 
-            if epoch % 50 == 0 {
-                net.l0.lr *= 0.999;
-                net.l2.lr *= 0.999;
+            if epoch % PROGRESSBAR_UPDATE_RATE == 0 && epoch != 0 {
+                let beautiful = {
+                    let id = word_id["beauty"];
+                    let mut beauty_vec = [0.; EMBEDDED_SIZE];
+
+                    net.l0.predict(onehot(id), &mut beauty_vec)?;
+
+                    let mut min_dist = 100000.;
+                    let mut min_word = 0;
+
+                    for i in 0..DICTIONARY_SIZE {
+                        spinner.inc(1);
+
+                        let buffer = net
+                            .l0
+                            .weights
+                            .moo_ref::<{ EMBEDDED_SIZE * DICTIONARY_SIZE }>()
+                            .matrix_ref::<Blas, EMBEDDED_SIZE, DICTIONARY_SIZE>();
+
+                        let mut dist = 0.;
+                        let mut argmax = 0;
+
+                        for j in 0..EMBEDDED_SIZE {
+                            dist += (buffer[(j, i)] - beauty_vec[j]).powi(2);
+                            if buffer[(j, i)] > buffer[(argmax, i)] {
+                                argmax = j
+                            }
+                        }
+                        dist = dist.sqrt();
+
+                        if dist < min_dist {
+                            min_dist = dist;
+                            min_word = argmax;
+                        }
+                    }
+
+                    id_word[min_word].clone()
+                };
 
                 spinner.set_message(format!(
-                    "cost: {:.3}, lr: {:.5}, input: {:?}, predicted: {:?} ({:?})",
-                    cost_sum / epoch as f32,
+                    "cost: {:.6}, lr: {:.5}, input: {}, predicted: {} ({}), beauty: {}",
+                    cost_sum / PROGRESSBAR_UPDATE_RATE as f32,
                     net.l0.lr,
                     word,
-                    id_word.get(argmax(o)),
+                    id_word[argmax(o)],
                     o[argmax(o)],
+                    beautiful
                 ));
                 cost_sum = 0.;
+                spinner.set_prefix("Training");
             }
 
+            if epoch % (PROGRESSBAR_UPDATE_RATE * 10) == 0 && epoch != 0 {
+                spinner.set_prefix("Saving model");
+                let mut f = File::create("./l0_parameters")?;
+                let mut buffer: Vec<_> = serialize_dense_layer(&net.l0).collect();
+
+                f.write_all(&buffer[..])?;
+                f = File::create("./l2_parameters")?;
+
+                buffer = serialize_dense_layer(&net.l1).collect();
+                f.write_all(&buffer[..])?;
+            }
+
+            net.l0.lr *= 0.99999;
+            net.l1.lr *= 0.99999;
             net.backpropagate(i, &buffer, dy)?;
+
+            net.l0.biasies = vec![0.; EMBEDDED_SIZE];
 
             epoch += 1;
             word_count += 1;
