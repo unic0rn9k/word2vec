@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_yaml as yaml;
 
 const DICTIONARY_FILE: &'static str = "dictionary.yaml";
+const STOP_WORDS: &'static str = stringify!(include!("../stopwords-en.txt"));
 
 #[derive(Deserialize, Serialize)]
 pub struct Dictionary {
@@ -32,7 +33,7 @@ impl Dictionary {
         for line in reader.lines() {
             for word in line.unwrap().split_whitespace() {
                 let mut word = word.to_string();
-                if wordify(&mut word).is_err() {
+                if wordify(&mut word).is_err() || STOP_WORDS.lines().any(|w| {let mut tmp = w.to_string(); wordify(&mut tmp).unwrap(); tmp == word}) {
                     continue;
                 }
 
