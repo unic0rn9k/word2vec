@@ -179,8 +179,8 @@ fn main() -> Result<()> {
                 //        o[n]
                 //    }
                 //); DICTIONARY_SIZE];
-                let mut dy = o;
-                dy[word2] = -1. / o[n];
+                let mut dy = *(o.moo_ref());
+                dy[word2] = -1. / o[word2];
 
                 let cost = o
                     .iter()
