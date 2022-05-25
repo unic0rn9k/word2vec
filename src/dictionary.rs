@@ -9,7 +9,14 @@ use serde::{Deserialize, Serialize};
 use serde_yaml as yaml;
 
 const DICTIONARY_FILE: &'static str = "dictionary.yaml";
-const STOP_WORDS: &'static str = stringify!(include!("../stopwords-en.txt"));
+const STOP_WORDS: &'static [&'static str] = &[
+    "a", "and", "be", "with", "can", "will", "an", "of", "the", "in", "it", "is", "i", "on", "for",
+    "where", "was", "who", "to", "as", "s", "at", "that", "were", "unk", "this", "by", "had",
+    "has", "these", "which", "but", "from", "not", "are", "when", "or", "either", "its", "a", "b",
+    "c", "d", "e", "f", "g", "h", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v",
+    "x", "y", "z", "their", "than", "you", "me", "whose", "my", "if", "become",
+];
+//const STOP_WORDS: &'static [&'static str] = &[];
 
 #[derive(Deserialize, Serialize)]
 pub struct Dictionary {
@@ -33,7 +40,7 @@ impl Dictionary {
         for line in reader.lines() {
             for word in line.unwrap().split_whitespace() {
                 let mut word = word.to_string();
-                if wordify(&mut word).is_err() || STOP_WORDS.lines().any(|w| {let mut tmp = w.to_string(); wordify(&mut tmp).unwrap(); tmp == word}) {
+                if wordify(&mut word).is_err() || STOP_WORDS.iter().any(|w| w.to_string() == word) {
                     continue;
                 }
 

@@ -17,11 +17,7 @@
 #![feature(round_char_boundary)]
 
 use exotic::rand::Rng;
-use exotic::{
-    anyhow::*,
-    prelude::*,
-    rand::thread_rng,
-};
+use exotic::{anyhow::*, prelude::*, rand::thread_rng};
 use exotic_macro::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fs::File;
@@ -37,8 +33,8 @@ mod dictionary;
 const DICTIONARY_SIZE: usize = 2500;
 const MAX_DISTANCE: usize = 4;
 const INPUT_FILE: &'static str = "wikitext-103/train.csv";
-const PROGRESSBAR_UPDATE_RATE: usize = 200;
-const EMBEDDED_SIZE: usize = 120;
+const PROGRESSBAR_UPDATE_RATE: usize = 100;
+const EMBEDDED_SIZE: usize = 200;
 
 model! {(
     derive: [],
@@ -99,12 +95,12 @@ fn load_net(net: &mut NeuralNet) -> Result<()> {
 //        .vector_mul(x);
 //}
 
-fn normal_float(f: f32) -> f32{
-    if !f.is_finite(){
+fn normal_float(f: f32) -> f32 {
+    if !f.is_finite() {
         0.
-    }else{
+    } else {
         f
-    }//.abs().min(50.) * f.signum()
+    } //.abs().min(50.) * f.signum()
 }
 
 fn main() -> Result<()> {
@@ -165,34 +161,32 @@ fn main() -> Result<()> {
                 }
 
                 let mut word2 = word_count;
-                while word2 == word_count{
-                    word2 = rng.gen_range(0..MAX_DISTANCE*2)
+                while word2 == word_count {
+                    word2 = rng.gen_range(0..MAX_DISTANCE * 2)
                 }
-                
 
                 let i: [f32; DICTIONARY_SIZE] = onehot(word_id[&word]);
 
                 net.predict(i, &mut buffer)?;
 
-                let y: [f32; DICTIONARY_SIZE] = onehot(word2);
-
                 let o = &buffer[buffer.len() - DICTIONARY_SIZE..buffer.len()];
 
-                //let dy = moo![|n| o[n] - y[n]; DICTIONARY_SIZE];
-                let dy = moo![|n|normal_float(
-                    if n == word2{
-                        -1./o[n]
-                    }else{
-                        -1./(o[n]-1.)
-                    }
-                ); DICTIONARY_SIZE];
+                //let dy = moo![|n| o[n] - if n == word2{1.}else{0.}; DICTIONARY_SIZE];
+                //let dy = moo![|n|normal_float(
+                //    if n == word2{
+                //        -1./o[n]
+                //    }else{
+                //        o[n]
+                //    }
+                //); DICTIONARY_SIZE];
+                let mut dy = o;
+                dy[word2] = -1. / o[n];
 
                 let cost = o
                     .iter()
-                    .zip(y.iter())
-                    .map(|(o, y)| (o - y).powi_(2))
-                    .sum::<f32>()
-                    .abs();
+                    .enumerate()
+                    .map(|(n, o)| (o - if n == word2 { 1. } else { 0. }).powi_(2))
+                    .sum::<f32>();
 
                 //let cost = -o[word_id[&word2]].ln();
 
@@ -211,15 +205,25 @@ fn main() -> Result<()> {
 
                 cost_sum += cost;
 
-                net.l0.lr *= 0.999999;
-                net.l1.lr *= 0.999999;
+                net.l0.lr *= 0.9999;
+                net.l1.lr *= 0.9999;
                 net.backpropagate(i, &buffer, dy)?;
                 net.l0.biasies = [0.; EMBEDDED_SIZE];
                 {
-                    let mut weights = net.l0.weights.mut_moo_ref().reshape_mut_ref(m![DICTIONARY_SIZE, EMBEDDED_SIZE], Blas);
-                        //.matrix_mut_ref::<Blas, DICTIONARY_SIZE, EMBEDDED_SIZE>();
-                    for i in 0..EMBEDDED_SIZE{
+                    let mut weights = net
+                        .l0
+                        .weights
+                        .mut_moo_ref()
+                        .reshape_mut_ref(m![DICTIONARY_SIZE, EMBEDDED_SIZE], Blas);
+                    //.matrix_mut_ref::<Blas, DICTIONARY_SIZE, EMBEDDED_SIZE>();
+                    for i in 0..EMBEDDED_SIZE {
                         weights.index_slice_mut(i).data.normalize();
+                        //let w_slice = &mut weights.index_slice_mut(i);
+                        //let norm = w_slice.data.norm();
+                        //if norm > 1.{
+                        //    w_slice.data.iter_mut().for_each(|n|*n/=norm);
+                        //}
+
                         //let mut w_norm = 0.;
                         //for j in 0..DICTIONARY_SIZE{
                         //    w_norm += weights[(j, i)].powi_(2);
@@ -233,12 +237,11 @@ fn main() -> Result<()> {
 
                 if epoch % PROGRESSBAR_UPDATE_RATE == 0 {
                     let beautiful = {
-                        let id = word_id["man"];
+                        let id = word_id[&word];
                         let mut beauty_vec = [0.; EMBEDDED_SIZE];
 
                         net.l0.predict(onehot(id), &mut beauty_vec)?;
-                        let mut min_word = 0;
-                        let mut min_dist = 10000.;
+                        let mut word_dists = [(10000., 0); DICTIONARY_SIZE];
 
                         for i in 0..DICTIONARY_SIZE {
                             spinner.inc(1);
@@ -260,36 +263,27 @@ fn main() -> Result<()> {
                             }
                             dist = dist.sqrt();
 
-                            if dist < min_dist {
-                                min_dist = dist;
-                                min_word = argmax;
-                            }
+                            word_dists[i] = (dist, i);
                         }
 
-                        id_word[min_word].clone()
+                        word_dists.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+
+                        word_dists
                     };
 
                     //println!("{word_buffer:?}");
                     spinner.set_message(format!(
-                        "cost: {:.6}, lr: {:.5}, input: {}, predicted: {} ({}), man: {}",
+                        "cost: {:.6}, lr: {:.5}, input: {}, predicted: {} ({}), synonym: {:?}",
                         cost_sum / PROGRESSBAR_UPDATE_RATE as f32,
                         net.l0.lr,
                         word,
                         id_word[argmax(o)],
                         o[argmax(o)],
-                        beautiful
+                        beautiful[0..4]
+                            .iter()
+                            .map(|(_, id)| id_word[*id].clone())
+                            .collect::<Vec<_>>()
                     ));
-                    if cost_sum / (PROGRESSBAR_UPDATE_RATE as f32) < 0.7{
-                        //panic!(
-                        // "cost: {:.6}, lr: {:.5}, input: {}, predicted: {} ({}), man: {}",
-                        //cost_sum / PROGRESSBAR_UPDATE_RATE as f32,
-                        //net.l0.lr,
-                        //word,
-                        //id_word[argmax(o)],
-                        //o[argmax(o)],
-                        //beautiful
-                        //)
-                    }
 
                     cost_sum = 0.;
                     spinner.set_prefix("Training");
